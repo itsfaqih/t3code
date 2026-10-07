@@ -7,19 +7,34 @@ import type {
   PullRequestReviewAnchor,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+import type { FileDiffMetadata } from "@pierre/diffs/types";
+import type { CodeViewDiffItem } from "@pierre/diffs/react";
 import { isPullRequestGroupedReviewStale } from "@t3tools/contracts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
 import { threadPullRequestKeysEqual } from "@t3tools/shared/threadPullRequests";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BookOpenCheckIcon, ExternalLinkIcon, FileDiffIcon, SparklesIcon } from "lucide-react";
 
-import { useEnvironmentSettings } from "~/hooks/useSettings";
+import { useClientSettings, useEnvironmentSettings } from "~/hooks/useSettings";
+import { useTheme } from "~/hooks/useTheme";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useServerConfigs, useThreadShells } from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
 import { pullRequestEnvironment } from "~/state/pullRequests";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { createPullRequestDiffFileContentsLoader } from "~/lib/diffFileContents";
+import {
+  buildFileDiffContentVersion,
+  buildFileDiffIdentityKey,
+  getRenderablePatch,
+  resolveDiffThemeName,
+  resolveFileDiffPath,
+  resolveFileDiffPreviousPath,
+} from "~/lib/diffRendering";
+import { PREFERRED_HIGHLIGHTER } from "~/lib/syntaxHighlighting";
+import { orderDiffFiles } from "./pullRequestFileOrder.logic";
+import { StyledDiffCodeView, type StyledDiffCodeViewOptions } from "../diffs/StyledDiffCodeView";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
@@ -54,6 +69,52 @@ const groupFiles = (anchors: ReadonlyArray<PullRequestReviewAnchor>) => {
     };
   });
 };
+
+interface GuideDiffPage {
+  readonly cursor: string | null;
+  readonly patch: string;
+  readonly nextCursor: string | null;
+}
+
+interface GuideDiffState {
+  readonly scopeKey: string;
+  readonly requestedCursor: string | null;
+  readonly pages: ReadonlyArray<GuideDiffPage>;
+}
+
+const EMPTY_GUIDE_DIFF_PAGES: ReadonlyArray<GuideDiffPage> = [];
+
+function GroupedReviewCodeView({
+  files,
+  options,
+}: {
+  files: ReadonlyArray<FileDiffMetadata>;
+  options: StyledDiffCodeViewOptions<undefined>;
+}) {
+  const items = useMemo<CodeViewDiffItem<undefined>[]>(
+    () =>
+      files.map((fileDiff) => ({
+        id: buildFileDiffIdentityKey(fileDiff),
+        type: "diff" as const,
+        fileDiff,
+        collapsed: false,
+        version: buildFileDiffContentVersion(fileDiff),
+      })),
+    [files],
+  );
+
+  if (items.length === 0) return null;
+
+  return (
+    <div className="min-w-0 overflow-hidden rounded-md border border-border/70 bg-background/50">
+      <StyledDiffCodeView<undefined>
+        className="h-72 min-w-0 overflow-auto"
+        items={items}
+        options={options}
+      />
+    </div>
+  );
+}
 
 export function PullRequestGroupedReviews({
   environmentId,
@@ -122,6 +183,163 @@ export function PullRequestGroupedReviews({
       : (reviews.find((entry) => entry.id === selectedReviewId) ?? reviews[0] ?? null);
   const stale = review !== null && isPullRequestGroupedReviewStale(detail, review);
   const completedGroups = review?.groups.filter((group) => group.completed).length ?? 0;
+  const clientSettings = useClientSettings();
+  const { resolvedTheme } = useTheme();
+  const diffEnabled =
+    review !== null && !stale && review.groups.some((group) => group.anchors.length > 0);
+  const diffScopeKey = diffEnabled
+    ? JSON.stringify([
+        environmentId,
+        reference.projectId,
+        reference.host,
+        reference.repository,
+        reference.number,
+        detail.updatedAt,
+      ])
+    : "";
+  const [diffState, setDiffState] = useState<GuideDiffState>({
+    scopeKey: "",
+    requestedCursor: null,
+    pages: EMPTY_GUIDE_DIFF_PAGES,
+  });
+  const activeDiffState: GuideDiffState =
+    diffState.scopeKey === diffScopeKey
+      ? diffState
+      : { scopeKey: diffScopeKey, requestedCursor: null, pages: EMPTY_GUIDE_DIFF_PAGES };
+  const requestedCursor = activeDiffState.requestedCursor;
+  const diffQuery = useEnvironmentQuery(
+    diffEnabled
+      ? pullRequestEnvironment.diff({
+          environmentId,
+          input: { ...reference, ...(requestedCursor === null ? {} : { cursor: requestedCursor }) },
+        })
+      : null,
+  );
+  const getDiffFileContents = useAtomCommand(pullRequestEnvironment.diffFileContents);
+  const loadDiffFiles = useMemo(
+    () =>
+      createPullRequestDiffFileContentsLoader(getDiffFileContents, {
+        environmentId,
+        reference,
+        commit: null,
+        cacheKey: `pull-request:${diffScopeKey}:all`,
+      }),
+    [diffScopeKey, environmentId, getDiffFileContents, reference],
+  );
+  const parsedDiffPages = useMemo(
+    () =>
+      activeDiffState.pages.map((page) => {
+        const cacheKey = `pull-request-guide:${diffScopeKey}:${page.cursor ?? "first"}`;
+        return getRenderablePatch(page.patch, cacheKey, {
+          compactPartialHunkOffsets: true,
+          ignoreWhitespace: clientSettings.diffIgnoreWhitespace,
+        });
+      }),
+    [activeDiffState.pages, clientSettings.diffIgnoreWhitespace, diffScopeKey],
+  );
+  const diffFiles = useMemo(
+    () =>
+      parsedDiffPages.flatMap((parsedPatch) =>
+        parsedPatch?.kind === "files" ? orderDiffFiles(parsedPatch.files) : [],
+      ),
+    [parsedDiffPages],
+  );
+  const anchorPaths = useMemo(
+    () =>
+      new Set(review?.groups.flatMap((group) => group.anchors.map((anchor) => anchor.path)) ?? []),
+    [review],
+  );
+  const diffPaths = useMemo(
+    () =>
+      new Set(
+        diffFiles.flatMap((file) => [resolveFileDiffPath(file), resolveFileDiffPreviousPath(file)]),
+      ),
+    [diffFiles],
+  );
+  useEffect(() => {
+    const data = diffQuery.data;
+    if (!diffEnabled || data === null || diffQuery.error !== null || diffQuery.isPending) return;
+    const parsedPage = getRenderablePatch(
+      data.patch,
+      `pull-request-guide:${diffScopeKey}:${requestedCursor ?? "first"}`,
+      {
+        compactPartialHunkOffsets: true,
+        ignoreWhitespace: clientSettings.diffIgnoreWhitespace,
+      },
+    );
+    const pathsWithDiff = new Set(diffPaths);
+    if (parsedPage?.kind === "files") {
+      for (const file of parsedPage.files) {
+        pathsWithDiff.add(resolveFileDiffPath(file));
+        pathsWithDiff.add(resolveFileDiffPreviousPath(file));
+      }
+    }
+    const hasMissingAnchor = [...anchorPaths].some((path) => !pathsWithDiff.has(path));
+    const nextCursor =
+      hasMissingAnchor &&
+      data.nextCursor !== null &&
+      data.nextCursor !== requestedCursor &&
+      !activeDiffState.pages.some((page) => page.cursor === data.nextCursor)
+        ? data.nextCursor
+        : requestedCursor;
+    setDiffState((previous) => {
+      const currentState =
+        previous.scopeKey === diffScopeKey
+          ? previous
+          : { scopeKey: diffScopeKey, requestedCursor: null, pages: EMPTY_GUIDE_DIFF_PAGES };
+      if (currentState.pages.some((page) => page.cursor === requestedCursor)) return previous;
+      return {
+        ...currentState,
+        requestedCursor: nextCursor,
+        pages: [
+          ...currentState.pages,
+          { cursor: requestedCursor, patch: data.patch, nextCursor: data.nextCursor },
+        ],
+      };
+    });
+  }, [
+    activeDiffState.pages,
+    diffEnabled,
+    diffQuery.data,
+    diffQuery.error,
+    diffQuery.isPending,
+    diffScopeKey,
+    requestedCursor,
+    clientSettings.diffIgnoreWhitespace,
+    anchorPaths,
+    diffPaths,
+  ]);
+  const nextDiffCursor = activeDiffState.pages.at(-1)?.nextCursor ?? null;
+  const diffFilesByGroup = useMemo(
+    () =>
+      new Map(
+        (review?.groups ?? []).map((group) => {
+          const paths = new Set(group.anchors.map((anchor) => anchor.path));
+          return [
+            group.id,
+            diffFiles.filter(
+              (file) =>
+                paths.has(resolveFileDiffPath(file)) ||
+                paths.has(resolveFileDiffPreviousPath(file)),
+            ),
+          ] as const;
+        }),
+      ),
+    [diffFiles, review],
+  );
+  const diffViewOptions = useMemo<StyledDiffCodeViewOptions<undefined>>(
+    () => ({
+      diffStyle: "unified",
+      lineDiffType: "none",
+      overflow: clientSettings.wordWrap ? "wrap" : "scroll",
+      theme: resolveDiffThemeName(resolvedTheme),
+      preferredHighlighter: PREFERRED_HIGHLIGHTER,
+      themeType: resolvedTheme,
+      stickyHeaders: true,
+      loadDiffFiles,
+    }),
+    [clientSettings.wordWrap, loadDiffFiles, resolvedTheme],
+  );
 
   const run = async () => {
     if (running || !modelSelection?.model) return;
@@ -249,6 +467,14 @@ export function PullRequestGroupedReviews({
             <ol className="divide-y divide-border/60">
               {review.groups.map((group, index) => {
                 const files = groupFiles(group.anchors);
+                const codeFiles = diffFilesByGroup.get(group.id) ?? [];
+                const codePaths = new Set(
+                  codeFiles.flatMap((file) => [
+                    resolveFileDiffPath(file),
+                    resolveFileDiffPreviousPath(file),
+                  ]),
+                );
+                const missingFiles = files.filter((file) => !codePaths.has(file.path));
 
                 return (
                   <li key={group.id} className="py-8 first:pt-6">
@@ -310,7 +536,8 @@ export function PullRequestGroupedReviews({
                         </div>
                         {files.length > 0 ? (
                           <div className="space-y-2">
-                            {files.map((file) => (
+                            <GroupedReviewCodeView files={codeFiles} options={diffViewOptions} />
+                            {missingFiles.map((file) => (
                               <section
                                 key={file.path}
                                 className="min-w-0 overflow-hidden rounded-md border border-border/70 bg-background/50"
@@ -320,25 +547,15 @@ export function PullRequestGroupedReviews({
                                   <span className="min-w-0 truncate font-mono text-xs font-medium">
                                     {file.name}
                                   </span>
-                                  {file.directory ? (
-                                    <span className="hidden min-w-0 truncate text-xs text-muted-foreground sm:inline">
-                                      {file.directory}
-                                    </span>
-                                  ) : null}
                                   <span className="ml-auto shrink-0 rounded bg-background px-1.5 py-0.5 text-3xs text-muted-foreground">
-                                    {file.anchors.length} changed{" "}
-                                    {file.anchors.length === 1 ? "line" : "lines"}
+                                    Saved lines
                                   </span>
                                 </div>
                                 <div className="divide-y divide-border/50">
                                   {file.anchors.map((anchor) => (
-                                    <button
+                                    <div
                                       key={`${anchor.path}:${anchor.side}:${anchor.line}`}
-                                      type="button"
-                                      disabled={stale}
-                                      aria-label={`${anchor.path}:${anchor.line} ${anchor.text}${stale ? " (older revision)" : ""}`}
-                                      onClick={() => onOpenAnchor(anchor)}
-                                      className="group flex w-full min-w-0 items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:hover:bg-transparent"
+                                      className="flex min-w-0 items-start gap-3 px-3 py-2.5"
                                     >
                                       <span className="shrink-0 rounded bg-muted px-1.5 py-1 font-mono text-3xs text-muted-foreground">
                                         {anchor.line}
@@ -346,17 +563,52 @@ export function PullRequestGroupedReviews({
                                       <span className="shrink-0 text-3xs font-medium uppercase tracking-wide text-muted-foreground">
                                         {anchor.side}
                                       </span>
-                                      <code className="min-w-0 flex-1 truncate font-mono text-xs text-secondary-label">
-                                        {anchor.text}
+                                      <code className="min-w-0 flex-1 overflow-x-auto whitespace-pre font-mono text-xs text-secondary-label">
+                                        {anchor.text || " "}
                                       </code>
-                                      {!stale ? (
-                                        <ExternalLinkIcon className="size-3 shrink-0 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100" />
-                                      ) : null}
-                                    </button>
+                                    </div>
                                   ))}
                                 </div>
                               </section>
                             ))}
+                            {group.anchors.length > 0 ? (
+                              <div className="flex flex-wrap gap-1.5">
+                                {group.anchors.map((anchor) => (
+                                  <button
+                                    key={`${anchor.path}:${anchor.side}:${anchor.line}`}
+                                    type="button"
+                                    disabled={stale}
+                                    aria-label={`Open ${anchor.path}:${anchor.line} in Code tab${stale ? " (older revision)" : ""}`}
+                                    onClick={() => onOpenAnchor(anchor)}
+                                    className="group inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2 py-1 text-left font-mono text-2xs text-muted-foreground transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60 disabled:hover:bg-muted/20"
+                                  >
+                                    <span className="truncate">
+                                      {anchor.path.split("/").at(-1)}:{anchor.line}
+                                    </span>
+                                    {!stale ? (
+                                      <ExternalLinkIcon className="size-3 shrink-0 opacity-60 transition-opacity group-hover:opacity-100" />
+                                    ) : null}
+                                  </button>
+                                ))}
+                              </div>
+                            ) : null}
+                            {missingFiles.length > 0 &&
+                            diffEnabled &&
+                            (diffQuery.isPending || nextDiffCursor !== null) ? (
+                              <p aria-live="polite" className="text-xs text-muted-foreground">
+                                Loading code previews for the remaining files…
+                              </p>
+                            ) : null}
+                            {missingFiles.length > 0 &&
+                            diffEnabled &&
+                            !diffQuery.isPending &&
+                            (diffQuery.error !== null ||
+                              (nextDiffCursor === null && activeDiffState.pages.length > 0)) ? (
+                              <p className="text-xs text-muted-foreground">
+                                Full code previews are unavailable for some files; saved changed
+                                lines are shown.
+                              </p>
+                            ) : null}
                           </div>
                         ) : (
                           <div className="rounded-md border border-dashed border-border/70 px-4 py-8 text-center text-sm text-muted-foreground">

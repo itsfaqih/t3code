@@ -81,6 +81,20 @@ export interface ThreadTitleGenerationResult {
   needsRefinement?: boolean | undefined;
 }
 
+export interface GroupedReviewGenerationInput {
+  cwd: string;
+  patch: string;
+  modelSelection: ModelSelection;
+}
+
+export interface GroupedReviewGenerationResult {
+  groups: ReadonlyArray<{
+    title: string;
+    summary: string;
+    anchors: ReadonlyArray<{ path: string; side: "left" | "right"; line: number }>;
+  }>;
+}
+
 /**
  * TextGeneration - Service tag for commit and change request text generation.
  */
@@ -112,6 +126,9 @@ export class TextGeneration extends Context.Service<
     readonly generateThreadTitle: (
       input: ThreadTitleGenerationInput,
     ) => Effect.Effect<ThreadTitleGenerationResult, TextGenerationError>;
+    readonly generateGroupedReview?: (
+      input: GroupedReviewGenerationInput,
+    ) => Effect.Effect<GroupedReviewGenerationResult, TextGenerationError>;
   }
 >()("t3/textGeneration/TextGeneration") {}
 
@@ -119,7 +136,8 @@ type TextGenerationOp =
   | "generateCommitMessage"
   | "generatePrContent"
   | "generateBranchName"
-  | "generateThreadTitle";
+  | "generateThreadTitle"
+  | "generateGroupedReview";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -170,6 +188,19 @@ export const make = Effect.gen(function* () {
               ));
             return yield* textGeneration.generateThreadTitle({ ...input, linkedContext });
           }),
+        ),
+      ),
+    generateGroupedReview: (input) =>
+      resolveInstance(registry, "generateGroupedReview", input.modelSelection.instanceId).pipe(
+        Effect.flatMap((textGeneration) =>
+          textGeneration.generateGroupedReview
+            ? textGeneration.generateGroupedReview(input)
+            : Effect.fail(
+                new TextGenerationError({
+                  operation: "generateGroupedReview",
+                  detail: "This provider does not support grouped reviews.",
+                }),
+              ),
         ),
       ),
   });

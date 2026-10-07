@@ -44,6 +44,7 @@ import {
   createPullRequestStackAtomFamily,
 } from "./pullRequests.ts";
 import * as PullRequestDiffLoader from "./pullRequestDiffHttp.ts";
+import * as PullRequestGroupedReviewsLoader from "./pullRequestGroupedReviewsHttp.ts";
 import { executeAtomQuery } from "./runtime.ts";
 import { createPullRequestRouter } from "./pullRequestRouting.ts";
 import { GitHubRoutingPermissions } from "../connection/githubRoutingPermissions.ts";
@@ -674,11 +675,19 @@ const makeTestRuntime = Effect.fn("makeTestRuntime")(function* (
       Stream.provideService(stream, EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
   } as EnvironmentRegistry.EnvironmentRegistry["Service"]);
   const runtime = Atom.runtime(
-    Layer.merge(
+    Layer.mergeAll(
       Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
       Layer.succeed(
         PullRequestDiffLoader.PullRequestDiffLoader,
         PullRequestDiffLoader.PullRequestDiffLoader.of({ load: () => Effect.die("unused") }),
+      ),
+      Layer.succeed(
+        PullRequestGroupedReviewsLoader.PullRequestGroupedReviewsLoader,
+        PullRequestGroupedReviewsLoader.PullRequestGroupedReviewsLoader.of({
+          list: () => Effect.die("unused"),
+          create: () => Effect.die("unused"),
+          setProgress: () => Effect.die("unused"),
+        }),
       ),
     ),
   );

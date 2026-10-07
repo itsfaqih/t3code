@@ -12,7 +12,7 @@
  *
  * @module provider/Drivers/OpenCodeDriver
  */
-import { OpenCodeSettings, ProviderDriverKind } from "@t3tools/contracts";
+import { OpenCodeSettings, ProviderDriverKind, TextGenerationError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -168,6 +168,18 @@ function selectOpenCodeRuntimeTextGeneration(
         v1: v1.generateThreadTitle(input),
         v2: v2.generateThreadTitle(input),
       }),
+    generateGroupedReview: (input) =>
+      v1.generateGroupedReview && v2.generateGroupedReview
+        ? byOpenCodeRuntime(probe.get, {
+            v1: v1.generateGroupedReview(input),
+            v2: v2.generateGroupedReview(input),
+          })
+        : Effect.fail(
+            new TextGenerationError({
+              operation: "generateGroupedReview",
+              detail: "This OpenCode instance cannot generate grouped reviews.",
+            }),
+          ),
   };
 }
 

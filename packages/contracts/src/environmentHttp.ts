@@ -63,6 +63,14 @@ import {
   PullRequestUnavailableError,
 } from "./pullRequest.ts";
 import {
+  PullRequestGroupedReview,
+  PullRequestGroupedReviewCreateInput,
+  PullRequestGroupedReviewError,
+  PullRequestGroupedReviewListInput,
+  PullRequestGroupedReviewListResult,
+  PullRequestGroupedReviewProgressInput,
+} from "./pullRequestGroupedReview.ts";
+import {
   RelayCloudEnvironmentHealthRequest,
   RelayCloudMintCredentialRequest,
   RelayEnvironmentConfigRequest,
@@ -647,20 +655,70 @@ class EnvironmentProjectsHttpApi extends HttpApiGroup.make("projects")
   ) {}
 
 /** Large, compressible pull-request payloads travel over HTTP rather than the RPC socket. */
-class EnvironmentPullRequestsHttpApi extends HttpApiGroup.make("pullRequests").add(
-  HttpApiEndpoint.post("diff", "/api/pull-requests/diff", {
-    headers: OptionalBearerHeaders,
-    payload: PullRequestDiffInput,
-    success: PullRequestDiffResult,
-    error: [
-      PullRequestUnavailableError,
-      PullRequestOperationError,
-      EnvironmentAuthInvalidError,
-      EnvironmentScopeRequiredError,
-      EnvironmentInternalError,
-    ],
-  }).middleware(EnvironmentAuthenticatedAuth),
-) {}
+class EnvironmentPullRequestsHttpApi extends HttpApiGroup.make("pullRequests")
+  .add(
+    HttpApiEndpoint.post("diff", "/api/pull-requests/diff", {
+      headers: OptionalBearerHeaders,
+      payload: PullRequestDiffInput,
+      success: PullRequestDiffResult,
+      error: [
+        PullRequestUnavailableError,
+        PullRequestOperationError,
+        EnvironmentAuthInvalidError,
+        EnvironmentScopeRequiredError,
+        EnvironmentInternalError,
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("groupedReviews", "/api/pull-requests/grouped-reviews", {
+      headers: OptionalBearerHeaders,
+      payload: PullRequestGroupedReviewListInput,
+      success: PullRequestGroupedReviewListResult,
+      error: [
+        PullRequestUnavailableError,
+        PullRequestOperationError,
+        PullRequestGroupedReviewError,
+        EnvironmentAuthInvalidError,
+        EnvironmentScopeRequiredError,
+        EnvironmentInternalError,
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("createGroupedReview", "/api/pull-requests/grouped-reviews/create", {
+      headers: OptionalBearerHeaders,
+      payload: PullRequestGroupedReviewCreateInput,
+      success: PullRequestGroupedReview,
+      error: [
+        PullRequestUnavailableError,
+        PullRequestOperationError,
+        PullRequestGroupedReviewError,
+        EnvironmentAuthInvalidError,
+        EnvironmentScopeRequiredError,
+        EnvironmentInternalError,
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "setGroupedReviewProgress",
+      "/api/pull-requests/grouped-reviews/progress",
+      {
+        headers: OptionalBearerHeaders,
+        payload: PullRequestGroupedReviewProgressInput,
+        success: PullRequestGroupedReview,
+        error: [
+          PullRequestUnavailableError,
+          PullRequestOperationError,
+          PullRequestGroupedReviewError,
+          EnvironmentAuthInvalidError,
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+        ],
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
 
 class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
   .add(

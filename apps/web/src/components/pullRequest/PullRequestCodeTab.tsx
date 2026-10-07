@@ -6,6 +6,7 @@ import type {
   PullRequestDiffSide,
   PullRequestOmittedFileStat,
   PullRequestRef,
+  PullRequestReviewAnchor,
   PullRequestReviewPosition,
   PullRequestReviewThread,
   PullRequestThreadCommentsResult,
@@ -64,7 +65,6 @@ import { diffFileTreeEntries } from "../diffs/diffFileTree.logic";
 import { StyledDiffCodeView } from "../diffs/StyledDiffCodeView";
 import { Button } from "../ui/button";
 import { MorphIcon } from "~/components/MorphIcon";
-import { Checkbox } from "../ui/checkbox";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import {
   DropdownMenu,
@@ -77,6 +77,7 @@ import {
 import { toastManager } from "../ui/toast";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { PullRequestFileViewedControl } from "./PullRequestFileViewedControl";
 import { PendingReviewCommentCard, ReviewThreadCard } from "./PullRequestReviewAnnotation";
 import {
   isFileDiffCollapsed,
@@ -203,6 +204,7 @@ function PullRequestCodeTab({
   onAddToAgentSelection,
   onRefresh,
   refreshToken = 0,
+  revealAnchor,
 }: {
   environmentId: EnvironmentId;
   reference: PullRequestRef;
@@ -219,6 +221,7 @@ function PullRequestCodeTab({
   onRefresh: () => void;
   /** Bumped by the panel's refresh button: drop the accumulated pages and re-read the diff. */
   refreshToken?: number;
+  revealAnchor?: { readonly anchor: PullRequestReviewAnchor; readonly requestId: number } | null;
 }) {
   const { resolvedTheme } = useTheme();
   const settings = useClientSettings();
@@ -672,6 +675,32 @@ function PullRequestCodeTab({
     [items, requestTreeReveal, toggleFile],
   );
 
+  const handledReviewReveal = useRef<number | null>(null);
+  useEffect(() => {
+    if (
+      !revealAnchor ||
+      handledReviewReveal.current === revealAnchor.requestId ||
+      !viewer?.getInstance()
+    )
+      return;
+    const item = items.find(
+      (candidate) => resolveFileDiffPath(candidate.fileDiff) === revealAnchor.anchor.path,
+    );
+    if (!item) return;
+    if (item.collapsed === true) {
+      toggleFile(item.id);
+      return;
+    }
+    viewer.scrollTo({
+      type: "line",
+      id: item.id,
+      lineNumber: revealAnchor.anchor.line,
+      side: revealAnchor.anchor.side === "left" ? "deletions" : "additions",
+      align: "center",
+    });
+    handledReviewReveal.current = revealAnchor.requestId;
+  }, [items, revealAnchor, toggleFile, viewer]);
+
   const toggleAllFiles = () => {
     // Held as an override of the default rather than as the file keys on screen: a diff that is
     // still paging would otherwise bring its next slice in folded, moments after the reader
@@ -836,31 +865,12 @@ function PullRequestCodeTab({
       return (
         <span className="flex items-center gap-3">
           {stat}
-          {/* The header itself folds the file, so the tick keeps its press to itself. The
-              attribute is what the header's capture listener looks for. */}
-          <label
-            data-viewed-toggle=""
-            className="flex cursor-pointer select-none items-center gap-1.5 text-2xs text-muted-foreground"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <Checkbox
-              aria-label={stale ? "Changed" : "Viewed"}
-              checked={viewed}
-              onCheckedChange={(next) => setFileViewedRef.current(item.id, path, next === true)}
-            />
-            {stale ? (
-              <Tooltip>
-                <TooltipTrigger render={<span className="text-warning-foreground" />}>
-                  Changed
-                </TooltipTrigger>
-                <TooltipPopup side="bottom">
-                  This file has been pushed to since you marked it viewed.
-                </TooltipPopup>
-              </Tooltip>
-            ) : (
-              "Viewed"
-            )}
-          </label>
+          <PullRequestFileViewedControl
+            enabled={viewedFiles.enabled}
+            viewed={viewed}
+            stale={stale}
+            onChange={(next) => setFileViewedRef.current(item.id, path, next)}
+          />
         </span>
       );
     },

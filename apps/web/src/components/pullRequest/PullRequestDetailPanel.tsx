@@ -13,6 +13,7 @@ import {
   type PullRequestListEntry,
   type PullRequestUpdateMethod,
   type PullRequestRef,
+  type PullRequestReviewAnchor,
   resolveEnvironmentMachineKind,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -37,6 +38,7 @@ import {
   PanelRightIcon,
   PlayIcon,
   RotateCcwIcon,
+  SparklesIcon,
   TriangleAlertIcon,
 } from "lucide-react";
 import {
@@ -127,6 +129,7 @@ import { openOnHostLabel, showPullRequestLinkContextMenu } from "./pullRequestLi
 import { PullRequestMarkdownContext } from "./PullRequestMarkdown";
 import { PullRequestComposer } from "./PullRequestComposer";
 import { PullRequestSummaryTab } from "./PullRequestSummaryTab";
+import { PullRequestGroupedReviews } from "./PullRequestGroupedReviews";
 import { PullRequestTimelineTab } from "./PullRequestTimelineTab";
 import {
   buildAddSelectionToAgentHandoff,
@@ -179,7 +182,7 @@ import {
 } from "./pullRequestPresentation";
 import { PullRequestGlyph } from "./pullRequestIcons";
 
-type DetailTab = "summary" | "timeline" | "code";
+type DetailTab = "summary" | "timeline" | "code" | "review";
 
 const ACTION_SUCCESS_LABELS: Record<PullRequestAction, string> = {
   merge: "Pull request merged",
@@ -248,6 +251,7 @@ const TABS: ReadonlyArray<{ value: DetailTab; label: string }> = [
   { value: "summary", label: "Summary" },
   { value: "timeline", label: "Timeline" },
   { value: "code", label: "Code" },
+  { value: "review", label: "Guide" },
 ];
 
 // The diff viewer pulls in its worker pool, so load it only when the reader approaches Code.
@@ -503,6 +507,11 @@ export function PullRequestDetailPanel({
       : null;
   const [threadPickerOpen, setThreadPickerOpen] = useState(false);
   const [tab, setTab] = useState<DetailTab>("summary");
+  const [reviewReveal, setReviewReveal] = useState<{
+    readonly pullRequestKey: string;
+    readonly anchor: PullRequestReviewAnchor;
+    readonly requestId: number;
+  } | null>(null);
   const [timelineOrder, setTimelineOrder] = useState<"newest" | "oldest">("newest");
   const [codeCommitScope, setCodeCommitScope] = useState<{
     readonly pullRequestKey: string;
@@ -1445,7 +1454,10 @@ export function PullRequestDetailPanel({
   // uses this optimistic tab set to reserve the same chrome; a host without a patch removes Code
   // when its capabilities arrive.
   const visibleTabs = TABS.filter(
-    (item) => item.value !== "code" || detail === null || detail.capabilities.diff,
+    (item) =>
+      (item.value !== "code" && item.value !== "review") ||
+      detail === null ||
+      detail.capabilities.diff,
   );
   // The Code tab can be opened while the detail is still on its way, and the detail may then say
   // this host has no patch to show. The tab goes, so whoever was standing on it is moved back to
@@ -2058,6 +2070,12 @@ export function PullRequestDetailPanel({
                       </span>
                     </span>
                   </MenuItem>
+                  {detail.capabilities.diff ? (
+                    <MenuItem onClick={() => setTab("review")}>
+                      <SparklesIcon className="size-3.5" />
+                      Review with agent
+                    </MenuItem>
+                  ) : null}
                   <MenuItem
                     disabled={handoff !== null || !canFixFindings}
                     onClick={startFixFindings}
@@ -2796,8 +2814,31 @@ export function PullRequestDetailPanel({
                     {...(canFixFindings ? { onFixFinding: startFixFinding } : {})}
                     onRefresh={refreshDetail}
                     refreshToken={codeRefreshToken}
+                    revealAnchor={
+                      reviewReveal?.pullRequestKey === pullRequestKey ? reviewReveal : null
+                    }
                   />
                 </Suspense>
+              </div>
+            ) : null}
+            {mountedTabs.has("review") ? (
+              <div className={cn("absolute inset-0", tab !== "review" && "invisible")}>
+                <PullRequestGroupedReviews
+                  key={tabScopeKey}
+                  environmentId={environmentId}
+                  reference={reference}
+                  detail={detail}
+                  threadRef={threadRef}
+                  onOpenAnchor={(anchor) => {
+                    selectCodeCommit(null);
+                    setReviewReveal((previous) => ({
+                      pullRequestKey,
+                      anchor,
+                      requestId: (previous?.requestId ?? 0) + 1,
+                    }));
+                    setTab("code");
+                  }}
+                />
               </div>
             ) : null}
           </PullRequestMarkdownContext>

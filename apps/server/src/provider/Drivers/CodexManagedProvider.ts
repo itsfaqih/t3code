@@ -257,6 +257,15 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
       protect("generateBranchName", nativeGeneration.generateBranchName(value)),
     generateThreadTitle: (value) =>
       protect("generateThreadTitle", nativeGeneration.generateThreadTitle(value)),
+    generateGroupedReview: (value) =>
+      nativeGeneration.generateGroupedReview
+        ? protect("generateGroupedReview", nativeGeneration.generateGroupedReview(value))
+        : Effect.fail(
+            new TextGenerationError({
+              operation: "generateGroupedReview",
+              detail: "This Codex instance cannot generate grouped reviews.",
+            }),
+          ),
   };
   return {
     instanceId,

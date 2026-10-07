@@ -5,6 +5,8 @@ import {
   type PullRequestActionInput,
   type PullRequestDetail,
   type PullRequestDiffInput,
+  type PullRequestGroupedReviewCreateInput,
+  type PullRequestGroupedReviewProgressInput,
   type PullRequestRef,
   type PullRequestMergeMethod,
   PullRequestOperationError,
@@ -20,12 +22,14 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import {
   createAtomCommandScheduler,
   createEnvironmentRpcCommand,
+  createEnvironmentCommand,
   createEnvironmentRpcQueryAtomFamily,
   createEnvironmentRpcSubscriptionAtomFamily,
   createEnvironmentQueryAtomFamily,
 } from "./runtime.ts";
 import { createPullRequestRouter } from "./pullRequestRouting.ts";
 import * as PullRequestDiffLoader from "./pullRequestDiffHttp.ts";
+import * as PullRequestGroupedReviewsLoader from "./pullRequestGroupedReviewsHttp.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 
@@ -34,6 +38,7 @@ export {
   PullRequestDiffCredentialRejectedError,
 } from "./pullRequestDiffHttp.ts";
 export * as PullRequestDiffLoader from "./pullRequestDiffHttp.ts";
+export * as PullRequestGroupedReviewsLoader from "./pullRequestGroupedReviewsHttp.ts";
 
 /** @public Required to name the error in consumers' inferred pull request results. */
 export class EnvironmentHttpConnectionNotReadyError extends Data.TaggedError(
@@ -158,7 +163,10 @@ export function pullRequestDetailToVcsStatus(
  */
 export function createPullRequestEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<
-    EnvironmentRegistry | PullRequestDiffLoader.PullRequestDiffLoader | R,
+    | EnvironmentRegistry
+    | PullRequestDiffLoader.PullRequestDiffLoader
+    | PullRequestGroupedReviewsLoader.PullRequestGroupedReviewsLoader
+    | R,
     E
   >,
 ) {
@@ -276,6 +284,56 @@ export function createPullRequestEnvironmentAtoms<R, E>(
           }
           return yield* loader.load(prepared.value, input);
         }),
+    }),
+    groupedReviews: createEnvironmentQueryAtomFamily(runtime, {
+      label: "environment-data:pull-requests:grouped-reviews",
+      staleTimeMs: 0,
+      execute: (input: PullRequestRef) =>
+        Effect.gen(function* () {
+          const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+          const loader = yield* PullRequestGroupedReviewsLoader.PullRequestGroupedReviewsLoader;
+          const prepared = yield* SubscriptionRef.get(supervisor.prepared);
+          if (Option.isNone(prepared)) {
+            return yield* new EnvironmentHttpConnectionNotReadyError({
+              message: "The environment HTTP connection is not ready.",
+            });
+          }
+          return yield* loader.list(prepared.value, input);
+        }),
+    }),
+    createGroupedReview: createEnvironmentCommand(runtime, {
+      label: "environment-data:pull-requests:create-grouped-review",
+      execute: (input: PullRequestGroupedReviewCreateInput) =>
+        Effect.gen(function* () {
+          const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+          const loader = yield* PullRequestGroupedReviewsLoader.PullRequestGroupedReviewsLoader;
+          const prepared = yield* SubscriptionRef.get(supervisor.prepared);
+          if (Option.isNone(prepared)) {
+            return yield* new EnvironmentHttpConnectionNotReadyError({
+              message: "The environment HTTP connection is not ready.",
+            });
+          }
+          return yield* loader.create(prepared.value, input);
+        }),
+      scheduler: commandScheduler,
+      concurrency: serialPerEnvironment,
+    }),
+    setGroupedReviewProgress: createEnvironmentCommand(runtime, {
+      label: "environment-data:pull-requests:set-grouped-review-progress",
+      execute: (input: PullRequestGroupedReviewProgressInput) =>
+        Effect.gen(function* () {
+          const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+          const loader = yield* PullRequestGroupedReviewsLoader.PullRequestGroupedReviewsLoader;
+          const prepared = yield* SubscriptionRef.get(supervisor.prepared);
+          if (Option.isNone(prepared)) {
+            return yield* new EnvironmentHttpConnectionNotReadyError({
+              message: "The environment HTTP connection is not ready.",
+            });
+          }
+          return yield* loader.setProgress(prepared.value, input);
+        }),
+      scheduler: commandScheduler,
+      concurrency: serialPerEnvironment,
     }),
     diffFileContents: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:pull-requests:diff-file-contents",

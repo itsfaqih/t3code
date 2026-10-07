@@ -6,6 +6,7 @@ import type {
   PullRequestDiffSide,
   PullRequestOmittedFileStat,
   PullRequestRef,
+  PullRequestReviewAnchor,
   PullRequestReviewPosition,
   PullRequestReviewThread,
   PullRequestThreadCommentsResult,
@@ -203,6 +204,7 @@ function PullRequestCodeTab({
   onAddToAgentSelection,
   onRefresh,
   refreshToken = 0,
+  revealAnchor,
 }: {
   environmentId: EnvironmentId;
   reference: PullRequestRef;
@@ -219,6 +221,7 @@ function PullRequestCodeTab({
   onRefresh: () => void;
   /** Bumped by the panel's refresh button: drop the accumulated pages and re-read the diff. */
   refreshToken?: number;
+  revealAnchor?: { readonly anchor: PullRequestReviewAnchor; readonly requestId: number } | null;
 }) {
   const { resolvedTheme } = useTheme();
   const settings = useClientSettings();
@@ -671,6 +674,32 @@ function PullRequestCodeTab({
     },
     [items, requestTreeReveal, toggleFile],
   );
+
+  const handledReviewReveal = useRef<number | null>(null);
+  useEffect(() => {
+    if (
+      !revealAnchor ||
+      handledReviewReveal.current === revealAnchor.requestId ||
+      !viewer?.getInstance()
+    )
+      return;
+    const item = items.find(
+      (candidate) => resolveFileDiffPath(candidate.fileDiff) === revealAnchor.anchor.path,
+    );
+    if (!item) return;
+    if (item.collapsed === true) {
+      toggleFile(item.id);
+      return;
+    }
+    viewer.scrollTo({
+      type: "line",
+      id: item.id,
+      lineNumber: revealAnchor.anchor.line,
+      side: revealAnchor.anchor.side === "left" ? "deletions" : "additions",
+      align: "center",
+    });
+    handledReviewReveal.current = revealAnchor.requestId;
+  }, [items, revealAnchor, toggleFile, viewer]);
 
   const toggleAllFiles = () => {
     // Held as an override of the default rather than as the file keys on screen: a diff that is

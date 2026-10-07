@@ -251,7 +251,7 @@ const TABS: ReadonlyArray<{ value: DetailTab; label: string }> = [
   { value: "summary", label: "Summary" },
   { value: "timeline", label: "Timeline" },
   { value: "code", label: "Code" },
-  { value: "review", label: "Agent review" },
+  { value: "review", label: "Guide" },
 ];
 
 // The diff viewer pulls in its worker pool, so load it only when the reader approaches Code.

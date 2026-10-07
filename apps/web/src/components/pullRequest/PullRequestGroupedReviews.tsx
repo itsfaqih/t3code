@@ -14,7 +14,7 @@ import { isPullRequestGroupedReviewStale } from "@t3tools/contracts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
 import { threadPullRequestKeysEqual } from "@t3tools/shared/threadPullRequests";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   BookOpenCheckIcon,
   ChevronDownIcon,
@@ -43,7 +43,10 @@ import {
 } from "~/lib/diffRendering";
 import { PREFERRED_HIGHLIGHTER } from "~/lib/syntaxHighlighting";
 import { orderDiffFiles } from "./pullRequestFileOrder.logic";
+import { toggleFileDiffFoldForViewed } from "./pullRequestDiff.logic";
 import { StyledDiffCodeView, type StyledDiffCodeViewOptions } from "../diffs/StyledDiffCodeView";
+import { PullRequestFileViewedControl } from "./PullRequestFileViewedControl";
+import { usePullRequestFilesViewed } from "./usePullRequestFilesViewed";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
@@ -93,27 +96,55 @@ interface GuideDiffState {
 
 const EMPTY_GUIDE_DIFF_PAGES: ReadonlyArray<GuideDiffPage> = [];
 
-function GroupedReviewFileCodeView({
+const GroupedReviewFileCodeView = memo(function GroupedReviewFileCodeView({
   fileDiff,
+  path,
   options,
   collapsed,
   onToggle,
+  viewedEnabled,
+  viewed,
+  stale,
+  onViewedChange,
 }: {
   fileDiff: FileDiffMetadata;
+  path: string;
   options: StyledDiffCodeViewOptions<undefined>;
   collapsed: boolean;
   onToggle: (fileKey: string) => void;
+  viewedEnabled: boolean;
+  viewed: boolean;
+  stale: boolean;
+  onViewedChange: (fileKey: string, path: string, viewed: boolean) => void;
 }) {
   const fileKey = buildFileDiffIdentityKey(fileDiff);
+  const handleViewedChange = useCallback(
+    (nextViewed: boolean) => onViewedChange(fileKey, path, nextViewed),
+    [fileKey, onViewedChange, path],
+  );
+  const renderHeaderMetadata = useCallback(
+    (viewerItem: CodeViewItem<undefined>) =>
+      viewerItem.type === "diff" ? (
+        <PullRequestFileViewedControl
+          enabled={viewedEnabled}
+          viewed={viewed}
+          stale={stale}
+          onChange={handleViewedChange}
+        />
+      ) : null,
+    [handleViewedChange, stale, viewed, viewedEnabled],
+  );
   const item = useMemo<CodeViewDiffItem<undefined>>(
     () => ({
       id: fileKey,
       type: "diff",
       fileDiff,
       collapsed,
-      version: fnv1a32(`${buildFileDiffContentVersion(fileDiff)}:${collapsed ? "1" : "0"}`),
+      version: fnv1a32(
+        `${buildFileDiffContentVersion(fileDiff)}:${collapsed ? "1" : "0"}:${viewedEnabled && viewed ? "v" : ""}:${stale ? "s" : ""}`,
+      ),
     }),
-    [collapsed, fileDiff, fileKey],
+    [collapsed, fileDiff, fileKey, stale, viewed, viewedEnabled],
   );
   const renderHeaderPrefix = useCallback(
     (viewerItem: CodeViewItem<undefined>) => {
@@ -148,17 +179,26 @@ function GroupedReviewFileCodeView({
         items={[item]}
         options={options}
         renderHeaderPrefix={renderHeaderPrefix}
+        renderHeaderMetadata={renderHeaderMetadata}
       />
     </div>
   );
-}
+});
 
 function GroupedReviewCodeView({
   files,
   options,
+  viewedEnabled,
+  isViewed,
+  isStale,
+  onViewedChange,
 }: {
   files: ReadonlyArray<FileDiffMetadata>;
   options: StyledDiffCodeViewOptions<undefined>;
+  viewedEnabled: boolean;
+  isViewed: (path: string) => boolean;
+  isStale: (path: string) => boolean;
+  onViewedChange: (path: string, viewed: boolean) => void;
 }) {
   const fileKeys = useMemo(() => files.map(buildFileDiffIdentityKey), [files]);
   const [collapsedFiles, setCollapsedFiles] = useState<ReadonlySet<string>>(() => new Set());
@@ -173,6 +213,13 @@ function GroupedReviewCodeView({
         return next;
       }),
     [],
+  );
+  const setFileViewed = useCallback(
+    (fileKey: string, path: string, viewed: boolean) => {
+      onViewedChange(path, viewed);
+      setCollapsedFiles((previous) => toggleFileDiffFoldForViewed(fileKey, viewed, null, previous));
+    },
+    [onViewedChange],
   );
   const toggleAllFiles = () => {
     setCollapsedFiles(allCollapsed ? new Set() : new Set(fileKeys));
@@ -189,13 +236,19 @@ function GroupedReviewCodeView({
       </div>
       {files.map((fileDiff) => {
         const fileKey = buildFileDiffIdentityKey(fileDiff);
+        const path = resolveFileDiffPath(fileDiff);
         return (
           <GroupedReviewFileCodeView
             key={fileKey}
             fileDiff={fileDiff}
+            path={path}
             options={options}
             collapsed={collapsedFiles.has(fileKey)}
             onToggle={toggleFile}
+            viewedEnabled={viewedEnabled}
+            viewed={isViewed(path)}
+            stale={isStale(path)}
+            onViewedChange={setFileViewed}
           />
         );
       })}
@@ -255,11 +308,7 @@ export function PullRequestGroupedReviews({
   const create = useAtomCommand(pullRequestEnvironment.createGroupedReview, {
     reportFailure: false,
   });
-  const setProgress = useAtomCommand(pullRequestEnvironment.setGroupedReviewProgress, {
-    reportFailure: false,
-  });
   const [running, setRunning] = useState(false);
-  const [savingGroup, setSavingGroup] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [current, setCurrent] = useState<PullRequestGroupedReview | null>(null);
   const [selectedReviewId, setSelectedReviewId] = useState<string | null>(null);
@@ -269,7 +318,25 @@ export function PullRequestGroupedReviews({
       ? current
       : (reviews.find((entry) => entry.id === selectedReviewId) ?? reviews[0] ?? null);
   const stale = review !== null && isPullRequestGroupedReviewStale(detail, review);
-  const completedGroups = review?.groups.filter((group) => group.completed).length ?? 0;
+  const viewedPaths = useMemo(
+    () => [
+      ...new Set(
+        review?.groups.flatMap((group) => group.anchors.map((anchor) => anchor.path)) ?? [],
+      ),
+    ],
+    [review],
+  );
+  const viewedFiles = usePullRequestFilesViewed({
+    environmentId,
+    reference,
+    enabled: detail.capabilities.viewedFiles !== undefined && review !== null && !stale,
+    paths: viewedPaths,
+  });
+  const setViewedFile = viewedFiles.setViewed;
+  const setFileViewed = useCallback(
+    (path: string, viewed: boolean) => setViewedFile(path, viewed),
+    [setViewedFile],
+  );
   const clientSettings = useClientSettings();
   const { resolvedTheme } = useTheme();
   const diffEnabled =
@@ -443,23 +510,6 @@ export function PullRequestGroupedReviews({
     }
   };
 
-  const mark = async (groupId: string, completed: boolean) => {
-    if (!review || savingGroup !== null) return;
-    setSavingGroup(groupId);
-    setError(null);
-    const result = await setProgress({
-      environmentId,
-      input: { ...reference, reviewId: review.id, groupId, completed },
-    });
-    setSavingGroup(null);
-    if (result._tag === "Success") {
-      setCurrent(result.value);
-      appAtomRegistry.refresh(pullRequestEnvironment.groupedReviews(queryTarget));
-    } else {
-      setError(String(squashAtomCommandFailure(result)));
-    }
-  };
-
   return (
     <div className="@container/guide h-full overflow-auto px-5 py-5 xl:px-8">
       <div className="w-full pb-16">
@@ -547,9 +597,11 @@ export function PullRequestGroupedReviews({
               {!stale && (review.headSha === null || detail.headSha === undefined) ? (
                 <span>Revision could not be checked</span>
               ) : null}
-              <span className="ml-auto tabular-nums">
-                {completedGroups} / {review.groups.length} groups reviewed
-              </span>
+              {viewedFiles.enabled ? (
+                <span className="ml-auto tabular-nums">
+                  {viewedFiles.viewedCount} / {viewedPaths.length} files viewed
+                </span>
+              ) : null}
             </div>
             <ol className="divide-y divide-border/60">
               {review.groups.map((group, index) => {
@@ -609,21 +661,17 @@ export function PullRequestGroupedReviews({
                               {files.length} files · {group.anchors.length} changed lines
                             </p>
                           </div>
-                          <label className="flex shrink-0 cursor-pointer select-none items-center gap-2 text-xs text-muted-foreground">
-                            <input
-                              type="checkbox"
-                              aria-label={`Mark ${group.title} complete`}
-                              checked={group.completed}
-                              disabled={savingGroup !== null}
-                              onChange={(event) => void mark(group.id, event.target.checked)}
-                              className="size-4 accent-primary"
-                            />
-                            Reviewed
-                          </label>
                         </div>
                         {files.length > 0 ? (
                           <div className="space-y-2">
-                            <GroupedReviewCodeView files={codeFiles} options={diffViewOptions} />
+                            <GroupedReviewCodeView
+                              files={codeFiles}
+                              options={diffViewOptions}
+                              viewedEnabled={viewedFiles.enabled}
+                              isViewed={viewedFiles.isViewed}
+                              isStale={viewedFiles.isStale}
+                              onViewedChange={setFileViewed}
+                            />
                             {missingFiles.map((file) => (
                               <section
                                 key={file.path}
@@ -634,6 +682,12 @@ export function PullRequestGroupedReviews({
                                   <span className="min-w-0 truncate font-mono text-xs font-medium">
                                     {file.name}
                                   </span>
+                                  <PullRequestFileViewedControl
+                                    enabled={viewedFiles.enabled}
+                                    viewed={viewedFiles.isViewed(file.path)}
+                                    stale={viewedFiles.isStale(file.path)}
+                                    onChange={(viewed) => setFileViewed(file.path, viewed)}
+                                  />
                                   <span className="ml-auto shrink-0 rounded bg-background px-1.5 py-0.5 text-3xs text-muted-foreground">
                                     Saved lines
                                   </span>

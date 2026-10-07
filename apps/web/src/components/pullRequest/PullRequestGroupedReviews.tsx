@@ -252,7 +252,7 @@ export function PullRequestGroupedReviews({
 
                 return (
                   <li key={group.id} className="py-8 first:pt-6">
-                    <div className="grid min-w-0 grid-cols-1 gap-5 2xl:grid-cols-[minmax(13rem,0.7fr)_minmax(0,1.3fr)] 2xl:gap-6">
+                    <div className="grid min-w-0 grid-cols-1 gap-5 @min-[64rem]/guide:grid-cols-[minmax(18rem,0.85fr)_minmax(24rem,1.4fr)] @min-[64rem]/guide:gap-8">
                       <div className="min-w-0">
                         <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                           {String(index + 1).padStart(2, "0")} /{" "}

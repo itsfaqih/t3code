@@ -31,7 +31,6 @@ import { useServerConfigs, useThreadShells } from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
 import { pullRequestEnvironment } from "~/state/pullRequests";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { createPullRequestDiffFileContentsLoader } from "~/lib/diffFileContents";
 import {
   buildFileDiffContentVersion,
   buildFileDiffIdentityKey,
@@ -43,6 +42,11 @@ import {
 } from "~/lib/diffRendering";
 import { PREFERRED_HIGHLIGHTER } from "~/lib/syntaxHighlighting";
 import { orderDiffFiles } from "./pullRequestFileOrder.logic";
+import {
+  groupedDiffHeight,
+  projectGroupedDiffFile,
+  type GroupedDiffSnippet,
+} from "./pullRequestGroupedDiff.logic";
 import { toggleFileDiffFoldForViewed } from "./pullRequestDiff.logic";
 import { StyledDiffCodeView, type StyledDiffCodeViewOptions } from "../diffs/StyledDiffCodeView";
 import { PullRequestFileViewedControl } from "./PullRequestFileViewedControl";
@@ -117,7 +121,7 @@ const GroupedReviewFileCodeView = memo(function GroupedReviewFileCodeView({
   stale: boolean;
   onViewedChange: (fileKey: string, path: string, viewed: boolean) => void;
 }) {
-  const fileKey = buildFileDiffIdentityKey(fileDiff);
+  const fileKey = fileDiff.cacheKey ?? buildFileDiffIdentityKey(fileDiff);
   const handleViewedChange = useCallback(
     (nextViewed: boolean) => onViewedChange(fileKey, path, nextViewed),
     [fileKey, onViewedChange, path],
@@ -175,7 +179,8 @@ const GroupedReviewFileCodeView = memo(function GroupedReviewFileCodeView({
   return (
     <div className="min-w-0 overflow-hidden rounded-md border border-border/70 bg-background/50">
       <StyledDiffCodeView<undefined>
-        className={`${collapsed ? "h-9" : "h-56"} min-w-0 overflow-auto`}
+        className="min-w-0 overflow-auto"
+        style={{ height: collapsed ? 36 : groupedDiffHeight(fileDiff) }}
         items={[item]}
         options={options}
         renderHeaderPrefix={renderHeaderPrefix}
@@ -193,14 +198,17 @@ function GroupedReviewCodeView({
   isStale,
   onViewedChange,
 }: {
-  files: ReadonlyArray<FileDiffMetadata>;
+  files: ReadonlyArray<GroupedDiffSnippet>;
   options: StyledDiffCodeViewOptions<undefined>;
   viewedEnabled: boolean;
   isViewed: (path: string) => boolean;
   isStale: (path: string) => boolean;
   onViewedChange: (path: string, viewed: boolean) => void;
 }) {
-  const fileKeys = useMemo(() => files.map(buildFileDiffIdentityKey), [files]);
+  const fileKeys = useMemo(
+    () => files.map(({ fileDiff }) => fileDiff.cacheKey ?? buildFileDiffIdentityKey(fileDiff)),
+    [files],
+  );
   const [collapsedFiles, setCollapsedFiles] = useState<ReadonlySet<string>>(() => new Set());
   const allCollapsed =
     fileKeys.length > 0 && fileKeys.every((fileKey) => collapsedFiles.has(fileKey));
@@ -234,8 +242,8 @@ function GroupedReviewCodeView({
           {allCollapsed ? "Expand all files" : "Collapse all files"}
         </Button>
       </div>
-      {files.map((fileDiff) => {
-        const fileKey = buildFileDiffIdentityKey(fileDiff);
+      {files.map(({ fileDiff }) => {
+        const fileKey = fileDiff.cacheKey ?? buildFileDiffIdentityKey(fileDiff);
         const path = resolveFileDiffPath(fileDiff);
         return (
           <GroupedReviewFileCodeView
@@ -369,17 +377,6 @@ export function PullRequestGroupedReviews({
         })
       : null,
   );
-  const getDiffFileContents = useAtomCommand(pullRequestEnvironment.diffFileContents);
-  const loadDiffFiles = useMemo(
-    () =>
-      createPullRequestDiffFileContentsLoader(getDiffFileContents, {
-        environmentId,
-        reference,
-        commit: null,
-        cacheKey: `pull-request:${diffScopeKey}:all`,
-      }),
-    [diffScopeKey, environmentId, getDiffFileContents, reference],
-  );
   const parsedDiffPages = useMemo(
     () =>
       activeDiffState.pages.map((page) => {
@@ -471,15 +468,19 @@ export function PullRequestGroupedReviews({
           const paths = new Set(group.anchors.map((anchor) => anchor.path));
           return [
             group.id,
-            diffFiles.filter(
-              (file) =>
-                paths.has(resolveFileDiffPath(file)) ||
-                paths.has(resolveFileDiffPreviousPath(file)),
-            ),
+            diffFiles
+              .filter(
+                (file) =>
+                  paths.has(resolveFileDiffPath(file)) ||
+                  paths.has(resolveFileDiffPreviousPath(file)),
+              )
+              .flatMap((file) =>
+                projectGroupedDiffFile(file, group.anchors, `${diffScopeKey}:${group.id}`),
+              ),
           ] as const;
         }),
       ),
-    [diffFiles, review],
+    [diffFiles, diffScopeKey, review],
   );
   const diffViewOptions = useMemo<StyledDiffCodeViewOptions<undefined>>(
     () => ({
@@ -490,9 +491,8 @@ export function PullRequestGroupedReviews({
       preferredHighlighter: PREFERRED_HIGHLIGHTER,
       themeType: resolvedTheme,
       stickyHeaders: true,
-      loadDiffFiles,
     }),
-    [clientSettings.wordWrap, loadDiffFiles, resolvedTheme],
+    [clientSettings.wordWrap, resolvedTheme],
   );
 
   const run = async () => {
@@ -607,13 +607,15 @@ export function PullRequestGroupedReviews({
               {review.groups.map((group, index) => {
                 const files = groupFiles(group.anchors);
                 const codeFiles = diffFilesByGroup.get(group.id) ?? [];
-                const codePaths = new Set(
-                  codeFiles.flatMap((file) => [
-                    resolveFileDiffPath(file),
-                    resolveFileDiffPreviousPath(file),
-                  ]),
+                const matchedAnchors = new Set(
+                  codeFiles.flatMap((snippet) => snippet.matchedAnchors),
                 );
-                const missingFiles = files.filter((file) => !codePaths.has(file.path));
+                const missingFiles = files
+                  .map((file) => ({
+                    ...file,
+                    anchors: file.anchors.filter((anchor) => !matchedAnchors.has(anchor)),
+                  }))
+                  .filter((file) => file.anchors.length > 0);
 
                 return (
                   <li key={group.id} className="py-8 first:pt-6">

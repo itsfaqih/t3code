@@ -7,14 +7,22 @@ import type {
   PullRequestReviewAnchor,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+import type { CodeViewItem } from "@pierre/diffs";
 import type { FileDiffMetadata } from "@pierre/diffs/types";
 import type { CodeViewDiffItem } from "@pierre/diffs/react";
 import { isPullRequestGroupedReviewStale } from "@t3tools/contracts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
 import { threadPullRequestKeysEqual } from "@t3tools/shared/threadPullRequests";
-import { useEffect, useMemo, useState } from "react";
-import { BookOpenCheckIcon, ExternalLinkIcon, FileDiffIcon, SparklesIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  BookOpenCheckIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  ExternalLinkIcon,
+  FileDiffIcon,
+  SparklesIcon,
+} from "lucide-react";
 
 import { useClientSettings, useEnvironmentSettings } from "~/hooks/useSettings";
 import { useTheme } from "~/hooks/useTheme";
@@ -27,6 +35,7 @@ import { createPullRequestDiffFileContentsLoader } from "~/lib/diffFileContents"
 import {
   buildFileDiffContentVersion,
   buildFileDiffIdentityKey,
+  fnv1a32,
   getRenderablePatch,
   resolveDiffThemeName,
   resolveFileDiffPath,
@@ -84,6 +93,66 @@ interface GuideDiffState {
 
 const EMPTY_GUIDE_DIFF_PAGES: ReadonlyArray<GuideDiffPage> = [];
 
+function GroupedReviewFileCodeView({
+  fileDiff,
+  options,
+  collapsed,
+  onToggle,
+}: {
+  fileDiff: FileDiffMetadata;
+  options: StyledDiffCodeViewOptions<undefined>;
+  collapsed: boolean;
+  onToggle: (fileKey: string) => void;
+}) {
+  const fileKey = buildFileDiffIdentityKey(fileDiff);
+  const item = useMemo<CodeViewDiffItem<undefined>>(
+    () => ({
+      id: fileKey,
+      type: "diff",
+      fileDiff,
+      collapsed,
+      version: fnv1a32(`${buildFileDiffContentVersion(fileDiff)}:${collapsed ? "1" : "0"}`),
+    }),
+    [collapsed, fileDiff, fileKey],
+  );
+  const renderHeaderPrefix = useCallback(
+    (viewerItem: CodeViewItem<undefined>) => {
+      const isCollapsed = viewerItem.collapsed === true;
+      return (
+        <Button
+          size="icon-micro"
+          variant="ghost-muted"
+          aria-expanded={!isCollapsed}
+          aria-label={isCollapsed ? "Expand diff" : "Collapse diff"}
+          className="mr-1"
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggle(fileKey);
+          }}
+        >
+          {isCollapsed ? (
+            <ChevronRightIcon className="size-4" />
+          ) : (
+            <ChevronDownIcon className="size-4" />
+          )}
+        </Button>
+      );
+    },
+    [fileKey, onToggle],
+  );
+
+  return (
+    <div className="min-w-0 overflow-hidden rounded-md border border-border/70 bg-background/50">
+      <StyledDiffCodeView<undefined>
+        className={`${collapsed ? "h-9" : "h-56"} min-w-0 overflow-auto`}
+        items={[item]}
+        options={options}
+        renderHeaderPrefix={renderHeaderPrefix}
+      />
+    </div>
+  );
+}
+
 function GroupedReviewCodeView({
   files,
   options,
@@ -91,27 +160,45 @@ function GroupedReviewCodeView({
   files: ReadonlyArray<FileDiffMetadata>;
   options: StyledDiffCodeViewOptions<undefined>;
 }) {
-  const items = useMemo<CodeViewDiffItem<undefined>[]>(
-    () =>
-      files.map((fileDiff) => ({
-        id: buildFileDiffIdentityKey(fileDiff),
-        type: "diff" as const,
-        fileDiff,
-        collapsed: false,
-        version: buildFileDiffContentVersion(fileDiff),
-      })),
-    [files],
+  const fileKeys = useMemo(() => files.map(buildFileDiffIdentityKey), [files]);
+  const [collapsedFiles, setCollapsedFiles] = useState<ReadonlySet<string>>(() => new Set());
+  const allCollapsed =
+    fileKeys.length > 0 && fileKeys.every((fileKey) => collapsedFiles.has(fileKey));
+  const toggleFile = useCallback(
+    (fileKey: string) =>
+      setCollapsedFiles((previous) => {
+        const next = new Set(previous);
+        if (next.has(fileKey)) next.delete(fileKey);
+        else next.add(fileKey);
+        return next;
+      }),
+    [],
   );
+  const toggleAllFiles = () => {
+    setCollapsedFiles(allCollapsed ? new Set() : new Set(fileKeys));
+  };
 
-  if (items.length === 0) return null;
+  if (files.length === 0) return null;
 
   return (
-    <div className="min-w-0 overflow-hidden rounded-md border border-border/70 bg-background/50">
-      <StyledDiffCodeView<undefined>
-        className="h-72 min-w-0 overflow-auto"
-        items={items}
-        options={options}
-      />
+    <div className="space-y-2">
+      <div className="flex justify-end">
+        <Button size="xs" variant="ghost" onClick={toggleAllFiles}>
+          {allCollapsed ? "Expand all files" : "Collapse all files"}
+        </Button>
+      </div>
+      {files.map((fileDiff) => {
+        const fileKey = buildFileDiffIdentityKey(fileDiff);
+        return (
+          <GroupedReviewFileCodeView
+            key={fileKey}
+            fileDiff={fileDiff}
+            options={options}
+            collapsed={collapsedFiles.has(fileKey)}
+            onToggle={toggleFile}
+          />
+        );
+      })}
     </div>
   );
 }
